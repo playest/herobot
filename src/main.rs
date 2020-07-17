@@ -27,13 +27,17 @@ async fn main() -> Result<(), Error> {
 
     let id: UserId = UserId::from(recipient_id);
     println!("id: {}", id);
-    let r = api.send(id.text("message to you")).await?;
-
+    println!("First message");
+    let r = api.send(id.text("message to you").disable_notification()).await?;
+    
+    println!("Edit 1");
     sleep(Duration::from_secs(5));
     api.send(r.edit_text("edited")).await?;
 
+    println!("In between");
     api.send(id.text("in between")).await?;
 
+    println!("Edit 2");
     sleep(Duration::from_secs(5));
     api.send(r.edit_text("edited2")).await?;
 
