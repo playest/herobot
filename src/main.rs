@@ -13,41 +13,54 @@ use tokio::{prelude::*, stream::{StreamExt}};
 use thread::sleep;
 use futures::{pin_mut, select, join};
 
-struct Bot {
-    pub api: Api,
+struct Sender<'a> {
+    pub api: &'a Api,
     pub recipient: UserId,
-    pub status_indicator: MessageOrChannelPost,
-    pub status_indicator_oldness: i8,
     pub in_error: bool,
-    watch_dir: PathBuf,
-    stream: UpdatesStream,
-    rx: Receiver<DebouncedEvent>,
-    watcher: RecommendedWatcher,
 }
 
-impl Bot {
-    fn new(api: Api, recipient: UserId, message: MessageOrChannelPost, watch_dir: PathBuf) -> Bot {
+impl<'a> Sender<'a> {
+    fn new(api: &'a Api, recipient: UserId, message: &MessageOrChannelPost) -> Sender<'a> {
         let api = api;
         let stream = api.stream();
-        let (tx, rx) = channel();
-        let mut watcher: RecommendedWatcher = Watcher::new(tx, Duration::from_secs(2)).unwrap();
-        watcher.watch(&watch_dir, RecursiveMode::Recursive).unwrap();
-        Bot {
+
+        Sender {
             api,
             recipient,
-            status_indicator: message,
-            status_indicator_oldness: 0,
             in_error: false,
-            watch_dir,
-            stream,
-            rx,
-            watcher,
         }
     }
 
     fn error(&self, message: &str, err: Error) {
         //self.in_error = true;
         eprintln!("{} {}", message, err)
+    }
+
+    async fn send(&self, text: &str) {
+        match self.api.send(self.recipient.text(text)).await {
+            Ok(_) => {
+                //self.status_indicator_oldness += 1;
+            }
+            Err(err) => {
+                self.error("Cannot send message because", err);
+            }
+        };
+    }
+}
+
+struct StatusUpdater<'a> {
+    pub api: &'a Api,
+    pub status_indicator_oldness: i8,
+    pub status_indicator: MessageOrChannelPost,
+}
+
+impl<'a> StatusUpdater<'a> {
+    fn new(api: &'a Api, root_message: MessageOrChannelPost) -> StatusUpdater {
+        StatusUpdater {
+            api,
+            status_indicator_oldness: 0,
+            status_indicator: root_message
+        }
     }
 
     async fn update_status_indicator(&self) {
@@ -67,15 +80,28 @@ impl Bot {
         }
     }
 
-    async fn send(&self, text: &str) {
-        match self.api.send(self.recipient.text(text)).await {
-            Ok(_) => {
-                //self.status_indicator_oldness += 1;
-            }
-            Err(err) => {
-                self.error("Cannot send message because", err);
-            }
-        };
+    fn error(&self, message: &str, err: Error) {
+        //self.in_error = true;
+        eprintln!("{} {}", message, err)
+    }
+}
+
+struct FileWatcher<'a> {
+    sender: &'a Sender<'a>,
+    rx: Receiver<DebouncedEvent>,
+    watcher: RecommendedWatcher,
+}
+
+impl<'a> FileWatcher<'a> {
+    fn new(sender: &'a Sender, watch_dir: &PathBuf) -> FileWatcher<'a> {
+        let (tx, rx) = channel();
+        let mut watcher: RecommendedWatcher = Watcher::new(tx, Duration::from_secs(2)).unwrap();
+        watcher.watch(&watch_dir, RecursiveMode::Recursive).unwrap();
+        FileWatcher {
+            sender,
+            rx,
+            watcher
+        }
     }
 
     async fn maybe_notify(&self, path: &PathBuf) {
@@ -87,7 +113,7 @@ impl Bot {
                 if buffer.trim() != "ok" {
                     let file_name = path.file_name().unwrap().to_str().unwrap();
                     let msg = format!("{} not ok: {}", file_name, buffer);
-                    self.send(&msg).await;
+                    self.sender.send(&msg).await;
                     println!("News in {}", file_name);
                 }
             },
@@ -107,6 +133,20 @@ impl Bot {
             }
         }
     }
+}
+
+struct CommandWatcher<'a> {
+    sender: &'a Sender<'a>,
+    stream: &'a mut UpdatesStream,
+}
+
+impl<'a> CommandWatcher<'a> {
+    fn new(sender: &'a Sender, stream: &'a mut UpdatesStream) -> CommandWatcher<'a> {
+        CommandWatcher {
+            sender,
+            stream,
+        }
+    }
 
     async fn watch_commands(&mut self) {
         println!("Watch commands");
@@ -118,47 +158,13 @@ impl Bot {
                 if let UpdateKind::Message(message) = update.kind {
                     if let MessageKind::Text { ref data, .. } = message.kind {
                         if data == "/status" {
-                            show_status(self).await;
+                            self.sender.send("Status").await;
                         }
                     }
                 }
             },
             _ => { }
         }
-    }
-}
-
-async fn show_status(bot: &Bot) {
-    bot.send("Status").await;
-}
-
-async fn watch(path: &PathBuf, bot: &mut Bot) -> () {
-    let (tx, rx) = channel();
-    let mut watcher: RecommendedWatcher = Watcher::new(tx, Duration::from_secs(2)).unwrap();
-    watcher.watch(path, RecursiveMode::Recursive).unwrap();
-
-    loop {
-        let r = rx.recv();
-        match r {
-            Ok(event) => {
-                match event {
-                    DebouncedEvent::Write(path) => {
-                        println!("write in {:?}", path);
-                        let file = File::open(path.to_owned()).unwrap();
-                        let mut reader = BufReader::new(file);
-                        let mut buffer = String::new();
-                        match reader.read_line(&mut buffer) {
-                            Ok(_) => {
-                                bot.maybe_notify(&path).await;
-                            }
-                            Err(err) => eprintln!("Error: {}", err),
-                        }
-                    }
-                    _ => {}
-                }
-            }
-            Err(e) => eprintln!("watch error: {:?}", e),
-        };
     }
 }
 
@@ -181,33 +187,29 @@ async fn main() -> Result<(), Error> {
         ));
     }
 
-    let api = Api::new(token);
+    let api = Api::new(&token);
+    //let api2 = Api::new(&token);
+    let mut stream = api.stream();
 
     let id: UserId = UserId::from(recipient_id);
     //println!("id: {}", id);
     //println!("First message");
     let first_message = api.send(id.text("Herobot is back!").disable_notification()).await?;
-    let mut bot = Bot::new(api, id, first_message, watch_dir_path);
-    //let bot = Arc::new(Mutex::new(bot));
-    //let mut bot = Arc::new(RefCell::new(Bot::new(api, id, first_message)));
-    //file_watcher.await;
-    //let file_watcher = watch(&watch_dir_path, &mut bot);
-    //file_watcher.await;
+    let sender = Sender::new(&api, id, &first_message);
+    let file_watcher = FileWatcher::new(&sender, &watch_dir_path);
+    let mut command_watcher = CommandWatcher::new(&sender, &mut stream);
+    let status_updater: StatusUpdater = StatusUpdater::new(&api, first_message);
 
 
-    let mut stream2 = bot.api.stream().timeout(Duration::from_secs(5));
-
-    //let watch_files = bot.watch_files();
-    //let watch_commands = bot.watch_commands();
-    //let update_status = bot.update_status_indicator();
 
     loop {
-        let watch_files = bot.watch_files();
-        //let watch_commands = bot.watch_commands();
-        let update_status = bot.update_status_indicator();
+        let watch_files = file_watcher.watch_files();
+        let update_status = status_updater.update_status_indicator();
+        let watch_commands = command_watcher.watch_commands();
         
         //pin_mut!(watch_files, update_status);
-        join!(watch_files, update_status);
+        //join!(watch_files, update_status);
+        watch_commands.await;
 
         println!("Sleep");
         sleep(Duration::from_secs(2));
