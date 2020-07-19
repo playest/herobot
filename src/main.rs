@@ -7,11 +7,9 @@ use std::io::{prelude::*, BufReader};
 use std::path::{Path, PathBuf};
 use std::sync::{mpsc::{Receiver, channel}};
 use std::thread::{self};
-use std::{time::Duration, pin::Pin, task::{Poll, Context}};
+use std::{time::Duration};
 use telegram_bot::*;
 use tokio::{stream::{StreamExt}};
-
-use futures::{Future};
 
 struct Sender {
     pub api: Api,
@@ -163,16 +161,6 @@ impl<'a> CommandWatcher<'a> {
             },
             _ => { }
         }
-    }
-}
-
-struct DoNothing;
-
-impl Future for DoNothing {
-    type Output = ();
-
-    fn poll(self: Pin<&mut Self>, _ctx: &mut Context) -> Poll<Self::Output> {
-        Poll::Ready(())
     }
 }
 
