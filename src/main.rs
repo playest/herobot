@@ -62,7 +62,6 @@ impl StatusUpdater {
     }
 
     async fn update_status_indicator(&self, sender: &Sender) {
-        println!("Update status");
         let text = format!("Bot last active pinged at {}", Local::now().trunc_subsecs(0));
         sender.update_message(&self.status_indicator, text.as_str()).await;
     }
@@ -168,7 +167,6 @@ async fn main() -> Result<(), Error> {
         let mut tokio_rt = tokio::runtime::Runtime::new().unwrap();
         let status_updater = StatusUpdater::new(first_message);
         loop {
-            println!("Update status!");
             thread::sleep(Duration::from_secs(2));
             let sender = sender_for_thread_status.lock();
             let sender = tokio_rt.block_on(sender);
@@ -196,8 +194,7 @@ async fn main() -> Result<(), Error> {
     let sender_for_commands_watch = Arc::clone(&sender);
     tokio::task::spawn_blocking(move || {
         let mut tokio_rt = tokio::runtime::Runtime::new().unwrap();
-        let api = Api::new(&token);
-        let mut stream = api.stream();
+        let mut stream = Api::new(&token).stream();
         let mut command_watcher = CommandWatcher::new(&mut stream);
         loop {
             let command_task = command_watcher.watch_commands();
