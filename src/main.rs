@@ -5,11 +5,11 @@ use notify::{DebouncedEvent, RecommendedWatcher, RecursiveMode, Watcher};
 use std::fs::File;
 use std::io::{prelude::*, BufReader};
 use std::path::{Path, PathBuf};
-use std::sync::{mpsc::{Receiver, channel}, Arc};
+use std::sync::{mpsc::{Receiver, channel}};
 use std::thread::{self};
 use std::{time::Duration, pin::Pin, task::{Poll, Context}};
 use telegram_bot::*;
-use tokio::{prelude::*, stream::{StreamExt}};
+use tokio::{stream::{StreamExt}};
 
 use futures::{Future};
 
@@ -88,6 +88,7 @@ impl<'a> StatusUpdater<'a> {
 struct FileWatcher<'a> {
     sender: &'a Sender,
     rx: Receiver<DebouncedEvent>,
+    #[allow(dead_code)] // need this to avoid watcher beeing droped
     watcher: RecommendedWatcher,
 }
 
@@ -195,16 +196,11 @@ async fn main() -> Result<(), Error> {
     }
 
     let api = Api::new(&token);
-
     let id: UserId = UserId::from(recipient_id);
     let first_message = api.send(id.text("Herobot is back!").disable_notification()).await?;
 
-    let mut stream = api.stream();
-
     let api_sender = Api::new(&token);
     let sender = Sender::new(api_sender, id);
-
-    let api1 = Arc::new(api);
     
     //let file_watcher = FileWatcher::new(&sender, &watch_dir_path);
     //let mut command_watcher = CommandWatcher::new(&sender, &mut stream);
@@ -218,6 +214,7 @@ async fn main() -> Result<(), Error> {
         }
     });
 
+    let token2 = token.clone();
     let thread_status_updater = thread::spawn(move || {
         let api = Api::new(&token);
         let status_updater = StatusUpdater::new(&api, first_message);
@@ -225,16 +222,15 @@ async fn main() -> Result<(), Error> {
         loop {
             let update_status = status_updater.update_status_indicator();
             rt.block_on(update_status);
-            thread::sleep(Duration::from_secs(2));
+            thread::sleep(Duration::from_secs(11));
         }
     });
 
-
-
-    /*
+    /**/
     let thread_command_watcher = thread::spawn(move || {
-        let api = Api::new(&token);
+        let api = Api::new(&token2);
         let mut stream = api.stream();
+        let sender = Sender::new(api, id);
         let mut command_watcher = CommandWatcher::new(&sender, &mut stream);
         let mut rt = tokio::runtime::Runtime::new().unwrap();
         loop {
@@ -245,7 +241,7 @@ async fn main() -> Result<(), Error> {
         }
     });
     thread_command_watcher.join().unwrap();
-    */
+    /**/
 
     thread_file_watcher.join().unwrap();
     thread_status_updater.join().unwrap();
