@@ -5,24 +5,23 @@ use notify::{DebouncedEvent, RecommendedWatcher, RecursiveMode, Watcher};
 use std::fs::File;
 use std::io::{prelude::*, BufReader};
 use std::path::{Path, PathBuf};
-use std::sync::{mpsc::{Receiver, channel}};
+use std::sync::{mpsc::{Receiver, channel}, Arc};
 use std::thread::{self};
-use std::{time::Duration};
+use std::{time::Duration, pin::Pin, task::{Poll, Context}};
 use telegram_bot::*;
 use tokio::{prelude::*, stream::{StreamExt}};
-use thread::sleep;
-use futures::{pin_mut, select, join};
 
-struct Sender<'a> {
-    pub api: &'a Api,
+use futures::{Future};
+
+struct Sender {
+    pub api: Api,
     pub recipient: UserId,
     pub in_error: bool,
 }
 
-impl<'a> Sender<'a> {
-    fn new(api: &'a Api, recipient: UserId, message: &MessageOrChannelPost) -> Sender<'a> {
+impl Sender {
+    fn new(api: Api, recipient: UserId) -> Self {
         let api = api;
-        let stream = api.stream();
 
         Sender {
             api,
@@ -87,13 +86,13 @@ impl<'a> StatusUpdater<'a> {
 }
 
 struct FileWatcher<'a> {
-    sender: &'a Sender<'a>,
+    sender: &'a Sender,
     rx: Receiver<DebouncedEvent>,
     watcher: RecommendedWatcher,
 }
 
 impl<'a> FileWatcher<'a> {
-    fn new(sender: &'a Sender, watch_dir: &PathBuf) -> FileWatcher<'a> {
+    fn new(sender: &'a Sender, watch_dir: PathBuf) -> FileWatcher<'a> {
         let (tx, rx) = channel();
         let mut watcher: RecommendedWatcher = Watcher::new(tx, Duration::from_secs(2)).unwrap();
         watcher.watch(&watch_dir, RecursiveMode::Recursive).unwrap();
@@ -104,7 +103,7 @@ impl<'a> FileWatcher<'a> {
         }
     }
 
-    async fn maybe_notify(&self, path: &PathBuf) {
+    async fn maybe_notify(&self, path: PathBuf) {
         let file = File::open(path.to_owned()).unwrap();
         let mut reader = BufReader::new(file);
         let mut buffer = String::new();
@@ -123,20 +122,18 @@ impl<'a> FileWatcher<'a> {
 
     async fn watch_files(&self) {
         println!("Watch files");
-        for _ in 1..10 {
-            let r = self.rx.try_recv();
-            match r {
-                Ok(DebouncedEvent::Write(path)) => {
-                    self.maybe_notify(&path).await;
-                },
-                _ => { }
-            }
+        let r = self.rx.recv();
+        match r {
+            Ok(DebouncedEvent::Write(path)) => {
+                self.maybe_notify(path).await;
+            },
+            _ => { }
         }
     }
 }
 
 struct CommandWatcher<'a> {
-    sender: &'a Sender<'a>,
+    sender: &'a Sender,
     stream: &'a mut UpdatesStream,
 }
 
@@ -168,6 +165,16 @@ impl<'a> CommandWatcher<'a> {
     }
 }
 
+struct DoNothing;
+
+impl Future for DoNothing {
+    type Output = ();
+
+    fn poll(self: Pin<&mut Self>, _ctx: &mut Context) -> Poll<Self::Output> {
+        Poll::Ready(())
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Error> {
     let token = env::var("TELEGRAM_BOT_TOKEN").expect("TELEGRAM_BOT_TOKEN not set");
@@ -188,32 +195,60 @@ async fn main() -> Result<(), Error> {
     }
 
     let api = Api::new(&token);
-    //let api2 = Api::new(&token);
-    let mut stream = api.stream();
 
     let id: UserId = UserId::from(recipient_id);
-    //println!("id: {}", id);
-    //println!("First message");
     let first_message = api.send(id.text("Herobot is back!").disable_notification()).await?;
-    let sender = Sender::new(&api, id, &first_message);
-    let file_watcher = FileWatcher::new(&sender, &watch_dir_path);
-    let mut command_watcher = CommandWatcher::new(&sender, &mut stream);
-    let status_updater: StatusUpdater = StatusUpdater::new(&api, first_message);
+
+    let mut stream = api.stream();
+
+    let api_sender = Api::new(&token);
+    let sender = Sender::new(api_sender, id);
+
+    let api1 = Arc::new(api);
+    
+    //let file_watcher = FileWatcher::new(&sender, &watch_dir_path);
+    //let mut command_watcher = CommandWatcher::new(&sender, &mut stream);
+
+    let thread_file_watcher = thread::spawn(move || {
+        let file_watcher = FileWatcher::new(&sender, watch_dir_path);
+        let mut rt = tokio::runtime::Runtime::new().unwrap();
+        loop {
+            let watch_files = file_watcher.watch_files();
+            rt.block_on(watch_files);
+        }
+    });
+
+    let thread_status_updater = thread::spawn(move || {
+        let api = Api::new(&token);
+        let status_updater = StatusUpdater::new(&api, first_message);
+        let mut rt = tokio::runtime::Runtime::new().unwrap();
+        loop {
+            let update_status = status_updater.update_status_indicator();
+            rt.block_on(update_status);
+            thread::sleep(Duration::from_secs(2));
+        }
+    });
 
 
 
-    loop {
-        let watch_files = file_watcher.watch_files();
-        let update_status = status_updater.update_status_indicator();
-        let watch_commands = command_watcher.watch_commands();
-        
-        //pin_mut!(watch_files, update_status);
-        //join!(watch_files, update_status);
-        watch_commands.await;
+    /*
+    let thread_command_watcher = thread::spawn(move || {
+        let api = Api::new(&token);
+        let mut stream = api.stream();
+        let mut command_watcher = CommandWatcher::new(&sender, &mut stream);
+        let mut rt = tokio::runtime::Runtime::new().unwrap();
+        loop {
+            
+            let watch_commands = command_watcher.watch_commands();
+            //watch_commands.await;
+            rt.block_on(watch_commands);
+        }
+    });
+    thread_command_watcher.join().unwrap();
+    */
 
-        println!("Sleep");
-        sleep(Duration::from_secs(2));
-    }
+    thread_file_watcher.join().unwrap();
+    thread_status_updater.join().unwrap();
 
     Ok(())
 }
