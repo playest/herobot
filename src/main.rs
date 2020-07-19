@@ -2,14 +2,12 @@ use std::env;
 
 use chrono::prelude::*;
 use notify::{DebouncedEvent, RecommendedWatcher, RecursiveMode, Watcher};
-use std::fs::File;
-use std::io::{prelude::*, BufReader};
 use std::path::{Path, PathBuf};
-use std::sync::{mpsc::{Receiver, channel, RecvError}};
+use std::sync::{mpsc::{Receiver, channel}, Arc};
 use std::thread::{self};
 use std::{time::Duration};
 use telegram_bot::*;
-use tokio::{stream::{StreamExt}};
+use tokio::{stream::{StreamExt}, sync::Mutex};
 
 struct Sender {
     pub api: Api,
@@ -43,49 +41,36 @@ impl Sender {
             }
         };
     }
+
+    async fn update_message(&self, message: &MessageOrChannelPost, text: &str) {
+        match self.api.send(message.edit_text(text)).await {
+            Ok(_) => { /*self.status_indicator_oldness = 0*/ },
+            Err(err) => self.error("Cannot update message", err),
+        };
+    }
 }
 
-struct StatusUpdater<'a> {
-    pub api: &'a Api,
-    pub status_indicator_oldness: i8,
+struct StatusUpdater {
     pub status_indicator: MessageOrChannelPost,
 }
 
-impl<'a> StatusUpdater<'a> {
-    fn new(api: &'a Api, root_message: MessageOrChannelPost) -> StatusUpdater {
+impl StatusUpdater {
+    fn new(root_message: MessageOrChannelPost) -> StatusUpdater {
         StatusUpdater {
-            api,
-            status_indicator_oldness: 0,
             status_indicator: root_message
         }
     }
 
-    async fn update_status_indicator(&self) {
+    async fn update_status_indicator(&self, sender: &Sender) {
         println!("Update status");
-        if self.status_indicator_oldness < 5 {
-            match self
-                .api
-                .send(self.status_indicator.edit_text(format!(
-                    "Bot last active pinged at {}",
-                    Local::now().trunc_subsecs(0)
-                )))
-                .await
-            {
-                Ok(_) => { /*self.status_indicator_oldness = 0*/ },
-                Err(err) => self.error("Cannot update status indicator", err),
-            };
-        }
-    }
-
-    fn error(&self, message: &str, err: Error) {
-        //self.in_error = true;
-        eprintln!("{} {}", message, err)
+        let text = format!("Bot last active pinged at {}", Local::now().trunc_subsecs(0));
+        sender.update_message(&self.status_indicator, text.as_str()).await;
     }
 }
 
 struct FileWatcher {
     rx: Receiver<DebouncedEvent>,
-    #[allow(dead_code)] // need this to avoid watcher beeing droped
+    #[allow(dead_code)] // need this to store watcher to avoid droping it
     watcher: RecommendedWatcher,
 }
 
@@ -100,73 +85,56 @@ impl FileWatcher {
         }
     }
 
-    fn get_changes(&self) -> Vec<PathBuf> {
+    fn wait_for_change(&self) -> PathBuf {
         println!("Watch files");
-        let mut changed: Vec<PathBuf> = vec![];
 
-        let r = self.rx.recv();
-        println!("r: {:?}", r);
-        match r {
-            Ok(DebouncedEvent::Write(path)) => {
-                changed.push(path);
-            },
-            Ok(_) => { /* ignore event */ }
-            Err(e) => {
-                eprintln!("An error happened when polling changes in files: {}", e);
-            }
-        }
-
-        let mut changed: Vec<PathBuf> = vec![];
-        for _ in 1..10 {
-            let r = self.rx.try_recv();
+        loop {
+            let r = self.rx.recv();
             println!("r: {:?}", r);
             match r {
                 Ok(DebouncedEvent::Write(path)) => {
-                    changed.push(path);
+                    return path;
                 },
                 Ok(_) => { /* ignore event */ }
-                Err(std::sync::mpsc::TryRecvError::Empty) => {
-                    break;
-                },
                 Err(e) => {
                     eprintln!("An error happened when polling changes in files: {}", e);
                 }
             }
         }
-
-        return changed;
     }
 }
 
+enum Command {
+    Status,
+}
+
 struct CommandWatcher<'a> {
-    sender: &'a Sender,
     stream: &'a mut UpdatesStream,
 }
 
 impl<'a> CommandWatcher<'a> {
-    fn new(sender: &'a Sender, stream: &'a mut UpdatesStream) -> CommandWatcher<'a> {
+    fn new(stream: &'a mut UpdatesStream) -> CommandWatcher<'a> {
         CommandWatcher {
-            sender,
             stream,
         }
     }
 
-    async fn watch_commands(&mut self) {
+    async fn watch_commands(&mut self) -> Command {
         println!("Watch commands");
-        let update = self.stream.try_next().await;
-        println!("update: {:?}", update);
-        match update {
-            //Some(Ok(Ok(update))) => { // next
-            Ok(Some(update)) => { // try_next
-                if let UpdateKind::Message(message) = update.kind {
-                    if let MessageKind::Text { ref data, .. } = message.kind {
-                        if data == "/status" {
-                            self.sender.send("Status").await;
+        loop {
+            match self.stream.next().await {
+                Some(Ok(update)) => { // next
+                //Ok(Some(update)) => { // try_next
+                    if let UpdateKind::Message(message) = update.kind {
+                        if let MessageKind::Text { ref data, .. } = message.kind {
+                            if data == "/status" {
+                                return Command::Status;
+                            }
                         }
                     }
-                }
-            },
-            _ => { }
+                },
+                _ => { }
+            }
         }
     }
 }
@@ -193,15 +161,56 @@ async fn main() -> Result<(), Error> {
     let api = Api::new(&token);
     let id: UserId = UserId::from(recipient_id);
     let first_message = api.send(id.text("Herobot is back!").disable_notification()).await?;
+    let sender = Arc::new(Mutex::new(Sender::new(api, id)));   
 
-    let api_sender = Api::new(&token);
+    let sender_for_thread_status = Arc::clone(&sender);
+    tokio::task::spawn_blocking(move || {
+        let mut tokio_rt = tokio::runtime::Runtime::new().unwrap();
+        let status_updater = StatusUpdater::new(first_message);
+        loop {
+            println!("Update status!");
+            thread::sleep(Duration::from_secs(2));
+            let sender = sender_for_thread_status.lock();
+            let sender = tokio_rt.block_on(sender);
+            let task = status_updater.update_status_indicator(&sender);
+            tokio_rt.block_on(task);
+        }
+    });
 
-    let file_watcher = FileWatcher::new(watch_dir_path);
+    let sender_for_thread_changes = Arc::clone(&sender);
+    tokio::task::spawn_blocking(move || {
+        let mut tokio_rt = tokio::runtime::Runtime::new().unwrap();
+        let file_watcher = FileWatcher::new(watch_dir_path);
+        loop {
+            println!("Changes");
+            let changes = file_watcher.wait_for_change();
+            let sender = sender_for_thread_changes.lock();
+            let sender = tokio_rt.block_on(sender);
+            let text = format!("Changes in: {}", changes.to_string_lossy());
+            let task = sender.send(&text);
+            tokio_rt.block_on(task);
+            println!("changes: {:?}" , changes);
+        }
+    });
 
-    loop {
-        let changes = file_watcher.get_changes();
-        println!("changes: {:?}" , changes);
-    }
+    let sender_for_commands_watch = Arc::clone(&sender);
+    tokio::task::spawn_blocking(move || {
+        let mut tokio_rt = tokio::runtime::Runtime::new().unwrap();
+        let api = Api::new(&token);
+        let mut stream = api.stream();
+        let mut command_watcher = CommandWatcher::new(&mut stream);
+        loop {
+            let command_task = command_watcher.watch_commands();
+            match tokio_rt.block_on(command_task) {
+                Command::Status => {
+                    let sender = sender_for_commands_watch.lock();
+                    let sender = tokio_rt.block_on(sender);
+                    let task = sender.send("The status here!");
+                    tokio_rt.block_on(task);
+                },
+            }
+        }
+    });
 
     Ok(())
 }
