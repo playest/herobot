@@ -151,10 +151,7 @@ async fn main() -> Result<(), Error> {
     );
 
     if !watch_dir_path.exists() {
-        panic!(format!(
-            "{} does not exists",
-            watch_dir_path.to_string_lossy()
-        ));
+        panic!(format!("{} does not exists",watch_dir_path.to_string_lossy()));
     }
 
     let api = Api::new(&token);
@@ -168,8 +165,7 @@ async fn main() -> Result<(), Error> {
         let status_updater = StatusUpdater::new(first_message);
         loop {
             thread::sleep(Duration::from_secs(2));
-            let sender = sender_for_thread_status.lock();
-            let sender = tokio_rt.block_on(sender);
+            let sender = tokio_rt.block_on(sender_for_thread_status.lock());
             let task = status_updater.update_status_indicator(&sender);
             tokio_rt.block_on(task);
         }
@@ -182,12 +178,11 @@ async fn main() -> Result<(), Error> {
         loop {
             println!("Changes");
             let changes = file_watcher.wait_for_change();
-            let sender = sender_for_thread_changes.lock();
-            let sender = tokio_rt.block_on(sender);
+            let sender = tokio_rt.block_on(sender_for_thread_changes.lock());
             let text = format!("Changes in: {}", changes.to_string_lossy());
             let task = sender.send(&text);
             tokio_rt.block_on(task);
-            println!("changes: {:?}" , changes);
+            println!("changes: {:?}", changes);
         }
     });
 
@@ -200,8 +195,7 @@ async fn main() -> Result<(), Error> {
             let command_task = command_watcher.watch_commands();
             match tokio_rt.block_on(command_task) {
                 Command::Status => {
-                    let sender = sender_for_commands_watch.lock();
-                    let sender = tokio_rt.block_on(sender);
+                    let sender = tokio_rt.block_on(sender_for_commands_watch.lock());
                     let task = sender.send("The status here!");
                     tokio_rt.block_on(task);
                 },
