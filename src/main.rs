@@ -1,11 +1,12 @@
 use std::env;
-
+use std::fs::File;
+use std::io::prelude::*;
 use chrono::prelude::*;
 use notify::{DebouncedEvent, RecommendedWatcher, RecursiveMode, Watcher};
 use std::path::{Path, PathBuf};
 use std::sync::{mpsc::{Receiver, channel}, Arc};
 use std::thread::{self};
-use std::{time::Duration};
+use std::{time::Duration, io::BufReader};
 use telegram_bot::*;
 use tokio::{stream::{StreamExt}, sync::Mutex};
 
@@ -91,7 +92,7 @@ impl FileWatcher {
             let r = self.rx.recv();
             println!("r: {:?}", r);
             match r {
-                Ok(DebouncedEvent::Write(path)) => {
+                Ok(DebouncedEvent::Write(path)) | Ok(DebouncedEvent::Create(path)) => {
                     return path;
                 },
                 Ok(_) => { /* ignore event */ }
@@ -138,6 +139,23 @@ impl<'a> CommandWatcher<'a> {
     }
 }
 
+fn analyze_file(path: &PathBuf) -> Option<String> {
+    let file = File::open(path.to_owned()).unwrap();
+    let mut reader = BufReader::new(file);
+    let mut buffer = String::new();
+    match reader.read_line(&mut buffer) {
+        Ok(_) => {
+            if buffer.trim() != "ok" {
+                let file_name = path.file_name().unwrap().to_str().unwrap();
+                let msg = format!("{} not ok: {}", file_name, buffer);
+                return Some(msg);
+            }
+        },
+        Err(err) => eprintln!("Error: {}", err),
+    }
+    None
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Error> {
     let token = env::var("TELEGRAM_BOT_TOKEN").expect("TELEGRAM_BOT_TOKEN not set");
@@ -179,10 +197,11 @@ async fn main() -> Result<(), Error> {
             println!("Changes");
             let changes = file_watcher.wait_for_change();
             let sender = tokio_rt.block_on(sender_for_thread_changes.lock());
-            let text = format!("Changes in: {}", changes.to_string_lossy());
-            let task = sender.send(&text);
-            tokio_rt.block_on(task);
-            println!("changes: {:?}", changes);
+            if let Some(text) = analyze_file(&changes) {
+                let task = sender.send(&text);
+                tokio_rt.block_on(task);
+                println!("changes: {:?}", changes);
+            }
         }
     });
 
