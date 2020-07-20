@@ -8,15 +8,10 @@ use std::sync::{
     mpsc::{channel, Receiver},
     Arc,
 };
-use std::thread::{self};
+use std::thread;
 use std::{collections::HashMap, io::BufReader, process, time::Duration};
 use telegram_bot::*;
 use tokio::{stream::StreamExt, sync::Mutex};
-
-#[cfg(windows)]
-const LINE_ENDING: &'static str = "\r\n";
-#[cfg(not(windows))]
-const LINE_ENDING: &'static str = "\n";
 
 struct Sender {
     pub api: Api,
@@ -26,8 +21,6 @@ struct Sender {
 
 impl Sender {
     fn new(api: Api, recipient: UserId) -> Self {
-        let api = api;
-
         Sender {
             api,
             recipient,
@@ -128,26 +121,23 @@ impl<'a> CommandWatcher<'a> {
     async fn watch_commands(&mut self) -> Command {
         println!("Watch commands");
         loop {
-            match self.stream.next().await {
-                Some(Ok(update)) => {
-                    // next
-                    //Ok(Some(update)) => { // try_next
-                    if let UpdateKind::Message(message) = update.kind {
-                        //let now = Utc::now().timestamp();
-                        //eprintln!("msg: {}, current: {}, diff: {}", message.date, now, now - message.date);
-                        //if message.date + 2 < now {
-                        if let MessageKind::Text { ref data, .. } = message.kind {
-                            println!("Command {}", data);
-                            if data == "/status" {
-                                return Command::Status;
-                            } else if data == "/stop" {
-                                return Command::Stop(message);
-                            }
+            if let Some(Ok(update)) = self.stream.next().await {
+                // next
+                //Ok(Some(update)) => { // try_next
+                if let UpdateKind::Message(message) = update.kind {
+                    //let now = Utc::now().timestamp();
+                    //eprintln!("msg: {}, current: {}, diff: {}", message.date, now, now - message.date);
+                    //if message.date + 2 < now {
+                    if let MessageKind::Text { ref data, .. } = message.kind {
+                        println!("Command {}", data);
+                        if data == "/status" {
+                            return Command::Status;
+                        } else if data == "/stop" {
+                            return Command::Stop(message);
                         }
-                        //}
                     }
+                    //}
                 }
-                _ => {}
             }
         }
     }
@@ -249,14 +239,11 @@ impl StatusStore {
     fn analyze_dir(&mut self, dir_path: &PathBuf) {
         let dir = fs::read_dir(dir_path).unwrap();
         for rfile in dir {
-            match rfile {
-                Ok(file) => {
+            if let Ok(file) = rfile {
                     let file_path = file.path();
                     if file_path.is_file() {
                         self.analyze_file(&file_path);
-                    }
                 }
-                Err(_) => {}
             }
         }
     }
@@ -265,28 +252,22 @@ impl StatusStore {
         let mut global_status_message = String::new();
         let dir = fs::read_dir(dir_path).unwrap();
         for rfile in dir {
-            match rfile {
-                Ok(file) => {
-                    let file_path = file.path();
-                    if file_path.is_file() {
-                        match self.store.get(&file_path) {
-                            Some(status) => {
-                                //global_status_message.push_str(format!("{} ok at {}{}", status.item_name, status.last_update.map_or_else(|| String::from("unknown date"), |d| d.to_string()), LINE_ENDING).as_str());
-                                let text = format!(
-                                    "{} at {}",
-                                    status.text.as_str(),
-                                    status.last_update.map_or_else(
-                                        || String::from("unknown date"),
-                                        |d| d.to_string()
-                                    )
-                                );
-                                global_status_message.push_str(text.as_str());
-                            }
-                            None => {}
-                        }
+            if let Ok(file) = rfile {
+                let file_path = file.path();
+                if file_path.is_file() {
+                    if let Some(status) = self.store.get(&file_path) {
+                        //global_status_message.push_str(format!("{} ok at {}{}", status.item_name, status.last_update.map_or_else(|| String::from("unknown date"), |d| d.to_string()), LINE_ENDING).as_str());
+                        let text = format!(
+                            "{} at {}",
+                            status.text.as_str(),
+                            status.last_update.map_or_else(
+                                || String::from("unknown date"),
+                                |d| d.to_string()
+                            )
+                        );
+                        global_status_message.push_str(text.as_str());
                     }
                 }
-                Err(_) => {}
             }
         }
         global_status_message
