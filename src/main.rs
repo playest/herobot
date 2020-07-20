@@ -184,7 +184,15 @@ fn status(directory: &PathBuf) -> String {
                             global_status_message.push_str(status.as_str());
                         },
                         None => {
-                            let filename = file_path.to_string_lossy();
+                            let filename = match file_path.file_name() {
+                                Some(os_filename) => {
+                                    os_filename.to_string_lossy().into_owned()
+                                },
+                                None => {
+                                    String::from("???")
+                                },
+                            };
+
                             global_status_message.push_str(format!("{} ok{}", filename, LINE_ENDING).as_str());
                         },
                     }
