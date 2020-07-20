@@ -1,6 +1,7 @@
 use chrono::prelude::*;
 use notify::{DebouncedEvent, RecommendedWatcher, RecursiveMode, Watcher};
 use std::env;
+use std::fmt::Write;
 use std::fs::{self, File};
 use std::io::prelude::*;
 use std::path::{Path, PathBuf};
@@ -12,7 +13,6 @@ use std::thread;
 use std::{collections::HashMap, io::BufReader, process, time::Duration};
 use telegram_bot::*;
 use tokio::{stream::StreamExt, sync::Mutex};
-use std::fmt::Write;
 
 struct Sender {
     pub api: Api,
@@ -82,7 +82,10 @@ impl FileWatcher {
         let (tx, rx) = channel();
         let mut watcher: RecommendedWatcher = Watcher::new(tx, Duration::from_secs(2)).unwrap();
         watcher.watch(&watch_dir, RecursiveMode::Recursive).unwrap();
-        FileWatcher { rx, _watcher: watcher }
+        FileWatcher {
+            rx,
+            _watcher: watcher,
+        }
     }
 
     fn wait_for_change(&self) -> PathBuf {
@@ -240,9 +243,9 @@ impl StatusStore {
         let dir = fs::read_dir(dir_path).unwrap();
         for rfile in dir {
             if let Ok(file) = rfile {
-                    let file_path = file.path();
-                    if file_path.is_file() {
-                        self.analyze_file(&file_path);
+                let file_path = file.path();
+                if file_path.is_file() {
+                    self.analyze_file(&file_path);
                 }
             }
         }
@@ -260,12 +263,19 @@ impl StatusStore {
                         let text = format!(
                             "{} at {}",
                             status.text.as_str(),
-                            status.last_update.map_or_else(
-                                || String::from("unknown date"),
-                                |d| d.to_string()
-                            )
+                            status
+                                .last_update
+                                .map_or_else(|| String::from("unknown date"), |d| d.to_string())
                         );
-                        write!(global_status_message, "{} at{}", &status.text, status.last_update.map_or_else(|| "unknown date".into(), |d| d.to_string())).unwrap();
+                        write!(
+                            global_status_message,
+                            "{} at{}",
+                            &status.text,
+                            status
+                                .last_update
+                                .map_or_else(|| "unknown date".into(), |d| d.to_string())
+                        )
+                        .unwrap();
                         global_status_message.push_str(text.as_str());
                     }
                 }
