@@ -226,7 +226,7 @@ impl Status {
         file_path.file_name().map_or_else(|| String::new(), |f| f.to_string_lossy().to_string())
     }
 }
-
+// Store all the status of the bot
 struct StatusStore {
     store: HashMap<PathBuf, Status>,
 }
@@ -321,6 +321,7 @@ async fn main() -> Result<(), Error> {
     let first_message = api.send(id.text("Herobot is back!").disable_notification()).await?;
     let sender = Arc::new(Mutex::new(Sender::new(api, id)));   
 
+    // "thread" that updates a message to show that the bot is still online
     let sender_for_thread_status = Arc::clone(&sender);
     tokio::task::spawn_blocking(move || {
         let mut tokio_rt = tokio::runtime::Runtime::new().unwrap();
@@ -333,7 +334,8 @@ async fn main() -> Result<(), Error> {
         }
     });
 
-    let status_store_for_thread_status = Arc::clone(&status_store_shared);
+    // "thread" that send a notification when a file is updated
+    let status_store_for_thread_changes = Arc::clone(&status_store_shared);
     let sender_for_thread_changes = Arc::clone(&sender);
     tokio::task::spawn_blocking(move || {
         let mut tokio_rt = tokio::runtime::Runtime::new().unwrap();
@@ -341,7 +343,7 @@ async fn main() -> Result<(), Error> {
         loop {
             println!("Changes");
             let changes = file_watcher.wait_for_change();
-            let mut status_store = tokio_rt.block_on(status_store_for_thread_status.lock());
+            let mut status_store = tokio_rt.block_on(status_store_for_thread_changes.lock());
             let (status, changed) = status_store.analyze_file(&changes);
             if changed {
                 let sender = tokio_rt.block_on(sender_for_thread_changes.lock());
@@ -352,6 +354,7 @@ async fn main() -> Result<(), Error> {
         }
     });
 
+    // "thread" that react when a command ("/something") is received in the chat
     let status_store_for_commands_watch = Arc::clone(&status_store_shared);
     let sender_for_commands_watch = Arc::clone(&sender);
     tokio::task::spawn_blocking(move || {
