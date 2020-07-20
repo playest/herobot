@@ -6,7 +6,7 @@ use notify::{DebouncedEvent, RecommendedWatcher, RecursiveMode, Watcher};
 use std::path::{Path, PathBuf};
 use std::sync::{mpsc::{Receiver, channel}, Arc};
 use std::thread::{self};
-use std::{time::Duration, io::BufReader, process};
+use std::{time::Duration, io::BufReader, process, collections::HashMap};
 use telegram_bot::*;
 use tokio::{stream::{StreamExt}, sync::Mutex};
 
@@ -159,56 +159,136 @@ fn analyze_file(path: &PathBuf) -> Option<String> {
     let mut buffer = String::new();
     match reader.read_line(&mut buffer) {
         Ok(_) => {
-            if buffer.trim() != "ok" {
-                let file_name = path.file_name().unwrap().to_str().unwrap();
-                let msg = format!("{} not ok: {}", file_name, buffer);
-                return Some(msg);
-            }
+            let file_name = path.file_name().unwrap().to_str().unwrap();
+            let msg = format!("{}: {}", file_name, buffer);
+            return Some(msg);
         },
         Err(err) => eprintln!("Error: {}", err),
     }
     None
 }
 
-fn status(directory: &PathBuf) -> String {
-    let mut global_status_message = String::new();
-    let dir = fs::read_dir(directory).unwrap();
-    for rfile in dir {
-        match rfile {
-            Ok(file) => {
-                let file_path = file.path();
-                if file_path.is_file() {
-                    let status = analyze_file(&file_path);
-                    match status {
-                        Some(status) => {
-                            global_status_message.push_str(status.as_str());
-                        },
-                        None => {
-                            let filename = match file_path.file_name() {
-                                Some(os_filename) => {
-                                    os_filename.to_string_lossy().into_owned()
-                                },
-                                None => {
-                                    String::from("???")
-                                },
-                            };
-                            let modified = file_path.metadata().map_or(
-                                String::from("date-unknown"),
-                                |md| {
-                                    let date = md.accessed().unwrap();
-                                    let datetime: DateTime<Utc> = date.into();
-                                    datetime.trunc_subsecs(0).to_string()
-                                }
-                            );
-                            global_status_message.push_str(format!("{} ok at {}{}", filename, modified, LINE_ENDING).as_str());
-                        },
-                    }
-                }
-            },
-            Err(_) => {},
+struct Status {
+    file_path: PathBuf,
+    item_name: String,
+    last_update: Option<DateTime<Utc>>,
+    text: String
+}
+
+impl Status {
+    fn new(file_path: PathBuf) -> Self {
+        let item_name = Self::extract_file_name(&file_path);
+        let last_update = Self::extract_modified_date(&file_path);
+        let text = Self::compute_status(&file_path);
+        Status {
+            file_path,
+            item_name,
+            last_update,
+            text,
         }
     }
-    return global_status_message;
+
+    fn update(&mut self) -> bool {
+        self.last_update = Self::extract_modified_date(&self.file_path);
+        let new_text = Self::compute_status(&self.file_path);
+        if new_text != self.text {
+            self.text = new_text;
+            true
+        }
+        else {
+            false
+        }
+    }
+
+    fn compute_status(file_path: &PathBuf) -> String {
+        match analyze_file(file_path) {
+            Some(text) => { text.trim().to_string() },
+            None => { String::new() },
+        }
+    }
+
+    fn extract_modified_date(file_path: &PathBuf) -> Option<DateTime<Utc>> {
+        file_path.metadata().map_or(
+            None,
+            |md| {
+                match md.accessed() {
+                    Ok(date) => {
+                        let datetime: DateTime<Utc> = date.into();
+                        Some(datetime.trunc_subsecs(0))
+                    },
+                    Err(_) => { None },
+                }
+            }
+        )
+    }
+
+    fn extract_file_name(file_path: &PathBuf) -> String {
+        file_path.file_name().map_or_else(|| String::new(), |f| f.to_string_lossy().to_string())
+    }
+}
+
+struct StatusStore {
+    store: HashMap<PathBuf, Status>,
+}
+
+impl StatusStore {
+    fn new() -> Self {
+        StatusStore {
+            store: HashMap::new(),
+        }
+    }
+
+    fn analyze_file(&mut self, file_path: &PathBuf) -> (&Status, bool) {
+        if !self.store.contains_key(file_path) {
+            let status = Status::new(file_path.clone());
+            self.store.insert(file_path.clone(), status);
+            (&self.store.get(file_path).unwrap(), true) //? Could not find a way to just return status
+        }
+        else {
+            let status = self.store.get_mut(file_path).unwrap();
+            let changed = status.update();
+            (status, changed)
+        }
+    }
+
+    fn analyze_dir(&mut self, dir_path: &PathBuf) {
+        let dir = fs::read_dir(dir_path).unwrap();
+        for rfile in dir {
+            match rfile {
+                Ok(file) => {
+                    let file_path = file.path();
+                    if file_path.is_file() {
+                        self.analyze_file(&file_path);
+                    }
+                },
+                Err(_) => {},
+            }
+        }
+    }
+
+    fn summary(&self, dir_path: &PathBuf) -> String {
+        let mut global_status_message = String::new();
+        let dir = fs::read_dir(dir_path).unwrap();
+        for rfile in dir {
+            match rfile {
+                Ok(file) => {
+                    let file_path = file.path();
+                    if file_path.is_file() {
+                        match self.store.get(&file_path) {
+                            Some(status) => {
+                                //global_status_message.push_str(format!("{} ok at {}{}", status.item_name, status.last_update.map_or_else(|| String::from("unknown date"), |d| d.to_string()), LINE_ENDING).as_str());
+                                let text = format!("{} at {}", status.text.as_str(), status.last_update.map_or_else(|| String::from("unknown date"), |d| d.to_string()));
+                                global_status_message.push_str(text.as_str());
+                            },
+                            None => { },
+                        }
+                    }
+                },
+                Err(_) => {},
+            }
+        }
+        global_status_message
+    }
 }
 
 #[tokio::main]
@@ -222,14 +302,22 @@ async fn main() -> Result<(), Error> {
         Path::new(&dirs::home_dir().unwrap().to_str().unwrap().to_owned()).join(".herobot"),
         |d| Path::new(&d).to_path_buf(),
     );
-    let watch_dir_path2 = watch_dir_path.clone();
-
     if !watch_dir_path.exists() {
         panic!(format!("{} does not exists",watch_dir_path.to_string_lossy()));
     }
+    let watch_dir_path2 = watch_dir_path.clone();
 
+    let mut status_store = StatusStore::new();
+    status_store.analyze_dir(&watch_dir_path);
+    let first_message_string = String::from(status_store.summary(&watch_dir_path));
+
+    let status_store_shared = Arc::new(Mutex::new(status_store));
     let api = Api::new(&token);
     let id: UserId = UserId::from(recipient_id);
+    if !first_message_string.is_empty() {
+        api.send(id.text(first_message_string).disable_notification()).await?;
+    }
+    
     let first_message = api.send(id.text("Herobot is back!").disable_notification()).await?;
     let sender = Arc::new(Mutex::new(Sender::new(api, id)));   
 
@@ -245,6 +333,7 @@ async fn main() -> Result<(), Error> {
         }
     });
 
+    let status_store_for_thread_status = Arc::clone(&status_store_shared);
     let sender_for_thread_changes = Arc::clone(&sender);
     tokio::task::spawn_blocking(move || {
         let mut tokio_rt = tokio::runtime::Runtime::new().unwrap();
@@ -252,15 +341,18 @@ async fn main() -> Result<(), Error> {
         loop {
             println!("Changes");
             let changes = file_watcher.wait_for_change();
-            let sender = tokio_rt.block_on(sender_for_thread_changes.lock());
-            if let Some(text) = analyze_file(&changes) {
-                let task = sender.send(&text);
+            let mut status_store = tokio_rt.block_on(status_store_for_thread_status.lock());
+            let (status, changed) = status_store.analyze_file(&changes);
+            if changed {
+                let sender = tokio_rt.block_on(sender_for_thread_changes.lock());
+                let task = sender.send(&status.text);
                 tokio_rt.block_on(task);
                 println!("changes: {:?}", changes);
             }
         }
     });
 
+    let status_store_for_commands_watch = Arc::clone(&status_store_shared);
     let sender_for_commands_watch = Arc::clone(&sender);
     tokio::task::spawn_blocking(move || {
         let mut tokio_rt = tokio::runtime::Runtime::new().unwrap();
@@ -271,9 +363,10 @@ async fn main() -> Result<(), Error> {
             let command_task = command_watcher.watch_commands();
             match tokio_rt.block_on(command_task) {
                 Command::Status => {
+                    let status_store = tokio_rt.block_on(status_store_for_commands_watch.lock());
+                    let summary = status_store.summary(&watch_dir_path2);
                     let sender = tokio_rt.block_on(sender_for_commands_watch.lock());
-                    let status = status(&watch_dir_path2);
-                    let task = sender.send(status.as_str());
+                    let task = sender.send(summary.as_str());
                     tokio_rt.block_on(task);
                 },
                 Command::Stop(m) => {
