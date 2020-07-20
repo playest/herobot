@@ -1,14 +1,17 @@
+use chrono::prelude::*;
+use notify::{DebouncedEvent, RecommendedWatcher, RecursiveMode, Watcher};
 use std::env;
 use std::fs::{self, File};
 use std::io::prelude::*;
-use chrono::prelude::*;
-use notify::{DebouncedEvent, RecommendedWatcher, RecursiveMode, Watcher};
 use std::path::{Path, PathBuf};
-use std::sync::{mpsc::{Receiver, channel}, Arc};
+use std::sync::{
+    mpsc::{channel, Receiver},
+    Arc,
+};
 use std::thread::{self};
-use std::{time::Duration, io::BufReader, process, collections::HashMap};
+use std::{collections::HashMap, io::BufReader, process, time::Duration};
 use telegram_bot::*;
-use tokio::{stream::{StreamExt}, sync::Mutex};
+use tokio::{stream::StreamExt, sync::Mutex};
 
 #[cfg(windows)]
 const LINE_ENDING: &'static str = "\r\n";
@@ -50,7 +53,7 @@ impl Sender {
 
     async fn update_message(&self, message: &MessageOrChannelPost, text: &str) {
         match self.api.send(message.edit_text(text)).await {
-            Ok(_) => { /*self.status_indicator_oldness = 0*/ },
+            Ok(_) => { /*self.status_indicator_oldness = 0*/ }
             Err(err) => self.error("Cannot update message", err),
         };
     }
@@ -63,13 +66,15 @@ struct StatusUpdater {
 impl StatusUpdater {
     fn new(root_message: MessageOrChannelPost) -> StatusUpdater {
         StatusUpdater {
-            status_indicator: root_message
+            status_indicator: root_message,
         }
     }
 
     async fn update_status_indicator(&self, sender: &Sender) {
         let text = format!("Herobot pinged at {}", Local::now().trunc_subsecs(0));
-        sender.update_message(&self.status_indicator, text.as_str()).await;
+        sender
+            .update_message(&self.status_indicator, text.as_str())
+            .await;
     }
 }
 
@@ -84,10 +89,7 @@ impl FileWatcher {
         let (tx, rx) = channel();
         let mut watcher: RecommendedWatcher = Watcher::new(tx, Duration::from_secs(2)).unwrap();
         watcher.watch(&watch_dir, RecursiveMode::Recursive).unwrap();
-        FileWatcher {
-            rx,
-            watcher
-        }
+        FileWatcher { rx, watcher }
     }
 
     fn wait_for_change(&self) -> PathBuf {
@@ -99,7 +101,7 @@ impl FileWatcher {
             match r {
                 Ok(DebouncedEvent::Write(path)) | Ok(DebouncedEvent::Create(path)) => {
                     return path;
-                },
+                }
                 Ok(_) => { /* ignore event */ }
                 Err(e) => {
                     eprintln!("An error happened when polling changes in files: {}", e);
@@ -120,34 +122,32 @@ struct CommandWatcher<'a> {
 
 impl<'a> CommandWatcher<'a> {
     fn new(stream: &'a mut UpdatesStream) -> CommandWatcher<'a> {
-        CommandWatcher {
-            stream,
-        }
+        CommandWatcher { stream }
     }
 
     async fn watch_commands(&mut self) -> Command {
         println!("Watch commands");
         loop {
             match self.stream.next().await {
-                Some(Ok(update)) => { // next
-                //Ok(Some(update)) => { // try_next
+                Some(Ok(update)) => {
+                    // next
+                    //Ok(Some(update)) => { // try_next
                     if let UpdateKind::Message(message) = update.kind {
                         //let now = Utc::now().timestamp();
                         //eprintln!("msg: {}, current: {}, diff: {}", message.date, now, now - message.date);
                         //if message.date + 2 < now {
-                            if let MessageKind::Text { ref data, .. } = message.kind {
-                                println!("Command {}", data);
-                                if data == "/status" {
-                                    return Command::Status;
-                                }
-                                else if data == "/stop" {
-                                    return Command::Stop(message);
-                                }
+                        if let MessageKind::Text { ref data, .. } = message.kind {
+                            println!("Command {}", data);
+                            if data == "/status" {
+                                return Command::Status;
+                            } else if data == "/stop" {
+                                return Command::Stop(message);
                             }
+                        }
                         //}
                     }
-                },
-                _ => { }
+                }
+                _ => {}
             }
         }
     }
@@ -162,7 +162,7 @@ fn analyze_file(path: &PathBuf) -> Option<String> {
             let file_name = path.file_name().unwrap().to_str().unwrap();
             let msg = format!("{}: {}", file_name, buffer);
             return Some(msg);
-        },
+        }
         Err(err) => eprintln!("Error: {}", err),
     }
     None
@@ -172,7 +172,7 @@ struct Status {
     file_path: PathBuf,
     item_name: String,
     last_update: Option<DateTime<Utc>>,
-    text: String
+    text: String,
 }
 
 impl Status {
@@ -194,36 +194,32 @@ impl Status {
         if new_text != self.text {
             self.text = new_text;
             true
-        }
-        else {
+        } else {
             false
         }
     }
 
     fn compute_status(file_path: &PathBuf) -> String {
         match analyze_file(file_path) {
-            Some(text) => { text.trim().to_string() },
-            None => { String::new() },
+            Some(text) => text.trim().to_string(),
+            None => String::new(),
         }
     }
 
     fn extract_modified_date(file_path: &PathBuf) -> Option<DateTime<Utc>> {
-        file_path.metadata().map_or(
-            None,
-            |md| {
-                match md.accessed() {
-                    Ok(date) => {
-                        let datetime: DateTime<Utc> = date.into();
-                        Some(datetime.trunc_subsecs(0))
-                    },
-                    Err(_) => { None },
-                }
+        file_path.metadata().map_or(None, |md| match md.accessed() {
+            Ok(date) => {
+                let datetime: DateTime<Utc> = date.into();
+                Some(datetime.trunc_subsecs(0))
             }
-        )
+            Err(_) => None,
+        })
     }
 
     fn extract_file_name(file_path: &PathBuf) -> String {
-        file_path.file_name().map_or_else(|| String::new(), |f| f.to_string_lossy().to_string())
+        file_path
+            .file_name()
+            .map_or_else(|| String::new(), |f| f.to_string_lossy().to_string())
     }
 }
 // Store all the status of the bot
@@ -243,8 +239,7 @@ impl StatusStore {
             let status = Status::new(file_path.clone());
             self.store.insert(file_path.clone(), status);
             (&self.store.get(file_path).unwrap(), true) //? Could not find a way to just return status
-        }
-        else {
+        } else {
             let status = self.store.get_mut(file_path).unwrap();
             let changed = status.update();
             (status, changed)
@@ -260,8 +255,8 @@ impl StatusStore {
                     if file_path.is_file() {
                         self.analyze_file(&file_path);
                     }
-                },
-                Err(_) => {},
+                }
+                Err(_) => {}
             }
         }
     }
@@ -277,14 +272,21 @@ impl StatusStore {
                         match self.store.get(&file_path) {
                             Some(status) => {
                                 //global_status_message.push_str(format!("{} ok at {}{}", status.item_name, status.last_update.map_or_else(|| String::from("unknown date"), |d| d.to_string()), LINE_ENDING).as_str());
-                                let text = format!("{} at {}", status.text.as_str(), status.last_update.map_or_else(|| String::from("unknown date"), |d| d.to_string()));
+                                let text = format!(
+                                    "{} at {}",
+                                    status.text.as_str(),
+                                    status.last_update.map_or_else(
+                                        || String::from("unknown date"),
+                                        |d| d.to_string()
+                                    )
+                                );
                                 global_status_message.push_str(text.as_str());
-                            },
-                            None => { },
+                            }
+                            None => {}
                         }
                     }
-                },
-                Err(_) => {},
+                }
+                Err(_) => {}
             }
         }
         global_status_message
@@ -303,7 +305,10 @@ async fn main() -> Result<(), Error> {
         |d| Path::new(&d).to_path_buf(),
     );
     if !watch_dir_path.exists() {
-        panic!(format!("{} does not exists",watch_dir_path.to_string_lossy()));
+        panic!(format!(
+            "{} does not exists",
+            watch_dir_path.to_string_lossy()
+        ));
     }
     let watch_dir_path2 = watch_dir_path.clone();
 
@@ -315,11 +320,14 @@ async fn main() -> Result<(), Error> {
     let api = Api::new(&token);
     let id: UserId = UserId::from(recipient_id);
     if !first_message_string.is_empty() {
-        api.send(id.text(first_message_string).disable_notification()).await?;
+        api.send(id.text(first_message_string).disable_notification())
+            .await?;
     }
-    
-    let first_message = api.send(id.text("Herobot is back!").disable_notification()).await?;
-    let sender = Arc::new(Mutex::new(Sender::new(api, id)));   
+
+    let first_message = api
+        .send(id.text("Herobot is back!").disable_notification())
+        .await?;
+    let sender = Arc::new(Mutex::new(Sender::new(api, id)));
 
     // "thread" that updates a message to show that the bot is still online
     let sender_for_thread_status = Arc::clone(&sender);
@@ -371,17 +379,20 @@ async fn main() -> Result<(), Error> {
                     let sender = tokio_rt.block_on(sender_for_commands_watch.lock());
                     let task = sender.send(summary.as_str());
                     tokio_rt.block_on(task);
-                },
+                }
                 Command::Stop(m) => {
                     if n == 0 {
                         eprintln!("Ignore first command if /stop");
                         let sender = tokio_rt.block_on(sender_for_commands_watch.lock());
-                        tokio_rt.block_on(sender.api.send(m.text_reply("Ignore /stop"))).unwrap();
-                    }
-                    else {
+                        tokio_rt
+                            .block_on(sender.api.send(m.text_reply("Ignore /stop")))
+                            .unwrap();
+                    } else {
                         println!("Exiting ... {}", n);
                         let sender = tokio_rt.block_on(sender_for_commands_watch.lock());
-                        tokio_rt.block_on(sender.api.send(m.text_reply("Stopping."))).unwrap();
+                        tokio_rt
+                            .block_on(sender.api.send(m.text_reply("Stopping.")))
+                            .unwrap();
                         process::exit(0);
                     }
                 }
