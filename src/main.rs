@@ -68,7 +68,7 @@ impl StatusUpdater {
     }
 
     async fn update_status_indicator(&self, sender: &Sender) {
-        let text = format!("Bot last active pinged at {}", Local::now().trunc_subsecs(0));
+        let text = format!("Herobot pinged at {}", Local::now().trunc_subsecs(0));
         sender.update_message(&self.status_indicator, text.as_str()).await;
     }
 }
@@ -192,8 +192,15 @@ fn status(directory: &PathBuf) -> String {
                                     String::from("???")
                                 },
                             };
-
-                            global_status_message.push_str(format!("{} ok{}", filename, LINE_ENDING).as_str());
+                            let modified = file_path.metadata().map_or(
+                                String::from("date-unknown"),
+                                |md| {
+                                    let date = md.accessed().unwrap();
+                                    let datetime: DateTime<Utc> = date.into();
+                                    datetime.trunc_subsecs(0).to_string()
+                                }
+                            );
+                            global_status_message.push_str(format!("{} ok at {}{}", filename, modified, LINE_ENDING).as_str());
                         },
                     }
                 }
