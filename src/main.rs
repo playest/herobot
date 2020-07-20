@@ -12,6 +12,7 @@ use std::thread;
 use std::{collections::HashMap, io::BufReader, process, time::Duration};
 use telegram_bot::*;
 use tokio::{stream::StreamExt, sync::Mutex};
+use std::fmt::Write;
 
 struct Sender {
     pub api: Api,
@@ -73,8 +74,7 @@ impl StatusUpdater {
 
 struct FileWatcher {
     rx: Receiver<DebouncedEvent>,
-    #[allow(dead_code)] // need this to store watcher to avoid droping it
-    watcher: RecommendedWatcher,
+    _watcher: RecommendedWatcher, // need _ to store watcher to avoid droping it
 }
 
 impl FileWatcher {
@@ -82,7 +82,7 @@ impl FileWatcher {
         let (tx, rx) = channel();
         let mut watcher: RecommendedWatcher = Watcher::new(tx, Duration::from_secs(2)).unwrap();
         watcher.watch(&watch_dir, RecursiveMode::Recursive).unwrap();
-        FileWatcher { rx, watcher }
+        FileWatcher { rx, _watcher: watcher }
     }
 
     fn wait_for_change(&self) -> PathBuf {
@@ -209,7 +209,7 @@ impl Status {
     fn extract_file_name(file_path: &PathBuf) -> String {
         file_path
             .file_name()
-            .map_or_else(|| String::new(), |f| f.to_string_lossy().to_string())
+            .map_or_else(String::new, |f| f.to_string_lossy().to_string())
     }
 }
 // Store all the status of the bot
@@ -265,6 +265,7 @@ impl StatusStore {
                                 |d| d.to_string()
                             )
                         );
+                        write!(global_status_message, "{} at{}", &status.text, status.last_update.map_or_else(|| "unknown date".into(), |d| d.to_string())).unwrap();
                         global_status_message.push_str(text.as_str());
                     }
                 }
@@ -295,7 +296,7 @@ async fn main() -> Result<(), Error> {
 
     let mut status_store = StatusStore::new();
     status_store.analyze_dir(&watch_dir_path);
-    let first_message_string = String::from(status_store.summary(&watch_dir_path));
+    let first_message_string = status_store.summary(&watch_dir_path);
 
     let status_store_shared = Arc::new(Mutex::new(status_store));
     let api = Api::new(&token);
