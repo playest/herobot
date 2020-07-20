@@ -109,7 +109,7 @@ impl FileWatcher {
 
 enum Command {
     Status,
-    Stop(Message),
+    Stop(Box<Message>),
 }
 
 struct CommandWatcher<'a> {
@@ -136,7 +136,7 @@ impl<'a> CommandWatcher<'a> {
                         if data == "/status" {
                             return Command::Status;
                         } else if data == "/stop" {
-                            return Command::Stop(message);
+                            return Command::Stop(Box::new(message));
                         }
                     }
                     //}
