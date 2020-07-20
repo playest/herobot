@@ -1,14 +1,19 @@
 use std::env;
-use std::fs::File;
+use std::fs::{self, File};
 use std::io::prelude::*;
 use chrono::prelude::*;
 use notify::{DebouncedEvent, RecommendedWatcher, RecursiveMode, Watcher};
 use std::path::{Path, PathBuf};
 use std::sync::{mpsc::{Receiver, channel}, Arc};
 use std::thread::{self};
-use std::{time::Duration, io::BufReader};
+use std::{time::Duration, io::BufReader, process};
 use telegram_bot::*;
 use tokio::{stream::{StreamExt}, sync::Mutex};
+
+#[cfg(windows)]
+const LINE_ENDING: &'static str = "\r\n";
+#[cfg(not(windows))]
+const LINE_ENDING: &'static str = "\n";
 
 struct Sender {
     pub api: Api,
@@ -106,6 +111,7 @@ impl FileWatcher {
 
 enum Command {
     Status,
+    Stop(Message),
 }
 
 struct CommandWatcher<'a> {
@@ -126,11 +132,19 @@ impl<'a> CommandWatcher<'a> {
                 Some(Ok(update)) => { // next
                 //Ok(Some(update)) => { // try_next
                     if let UpdateKind::Message(message) = update.kind {
-                        if let MessageKind::Text { ref data, .. } = message.kind {
-                            if data == "/status" {
-                                return Command::Status;
+                        //let now = Utc::now().timestamp();
+                        //eprintln!("msg: {}, current: {}, diff: {}", message.date, now, now - message.date);
+                        //if message.date + 2 < now {
+                            if let MessageKind::Text { ref data, .. } = message.kind {
+                                println!("Command {}", data);
+                                if data == "/status" {
+                                    return Command::Status;
+                                }
+                                else if data == "/stop" {
+                                    return Command::Stop(message);
+                                }
                             }
-                        }
+                        //}
                     }
                 },
                 _ => { }
@@ -156,6 +170,32 @@ fn analyze_file(path: &PathBuf) -> Option<String> {
     None
 }
 
+fn status(directory: &PathBuf) -> String {
+    let mut global_status_message = String::new();
+    let dir = fs::read_dir(directory).unwrap();
+    for rfile in dir {
+        match rfile {
+            Ok(file) => {
+                let file_path = file.path();
+                if file_path.is_file() {
+                    let status = analyze_file(&file_path);
+                    match status {
+                        Some(status) => {
+                            global_status_message.push_str(status.as_str());
+                        },
+                        None => {
+                            let filename = file_path.to_string_lossy();
+                            global_status_message.push_str(format!("{} ok{}", filename, LINE_ENDING).as_str());
+                        },
+                    }
+                }
+            },
+            Err(_) => {},
+        }
+    }
+    return global_status_message;
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Error> {
     let token = env::var("TELEGRAM_BOT_TOKEN").expect("TELEGRAM_BOT_TOKEN not set");
@@ -167,6 +207,7 @@ async fn main() -> Result<(), Error> {
         Path::new(&dirs::home_dir().unwrap().to_str().unwrap().to_owned()).join(".herobot"),
         |d| Path::new(&d).to_path_buf(),
     );
+    let watch_dir_path2 = watch_dir_path.clone();
 
     if !watch_dir_path.exists() {
         panic!(format!("{} does not exists",watch_dir_path.to_string_lossy()));
@@ -210,15 +251,31 @@ async fn main() -> Result<(), Error> {
         let mut tokio_rt = tokio::runtime::Runtime::new().unwrap();
         let mut stream = Api::new(&token).stream();
         let mut command_watcher = CommandWatcher::new(&mut stream);
+        let mut n = 0;
         loop {
             let command_task = command_watcher.watch_commands();
             match tokio_rt.block_on(command_task) {
                 Command::Status => {
                     let sender = tokio_rt.block_on(sender_for_commands_watch.lock());
-                    let task = sender.send("The status here!");
+                    let status = status(&watch_dir_path2);
+                    let task = sender.send(status.as_str());
                     tokio_rt.block_on(task);
                 },
+                Command::Stop(m) => {
+                    if n == 0 {
+                        eprintln!("Ignore first command if /stop");
+                        let sender = tokio_rt.block_on(sender_for_commands_watch.lock());
+                        tokio_rt.block_on(sender.api.send(m.text_reply("Ignore /stop"))).unwrap();
+                    }
+                    else {
+                        println!("Exiting ... {}", n);
+                        let sender = tokio_rt.block_on(sender_for_commands_watch.lock());
+                        tokio_rt.block_on(sender.api.send(m.text_reply("Stopping."))).unwrap();
+                        process::exit(0);
+                    }
+                }
             }
+            n += 1;
         }
     });
 
