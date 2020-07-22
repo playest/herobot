@@ -125,12 +125,7 @@ impl<'a> CommandWatcher<'a> {
         println!("Watch commands");
         loop {
             if let Some(Ok(update)) = self.stream.next().await {
-                // next
-                //Ok(Some(update)) => { // try_next
                 if let UpdateKind::Message(message) = update.kind {
-                    //let now = Utc::now().timestamp();
-                    //eprintln!("msg: {}, current: {}, diff: {}", message.date, now, now - message.date);
-                    //if message.date + 2 < now {
                     if let MessageKind::Text { ref data, .. } = message.kind {
                         println!("Command {}", data);
                         if data == "/status" {
@@ -139,7 +134,6 @@ impl<'a> CommandWatcher<'a> {
                             return Command::Stop(Box::new(message));
                         }
                     }
-                    //}
                 }
             }
         }
@@ -163,7 +157,7 @@ fn analyze_file(path: &PathBuf) -> Option<String> {
 
 struct Status {
     file_path: PathBuf,
-    item_name: String,
+    item_name: String, // planning to use it later
     last_update: Option<DateTime<Utc>>,
     text: String,
 }
