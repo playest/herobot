@@ -261,7 +261,7 @@ impl StatusStore {
                                 .last_update
                                 .map_or_else(|| String::from("unknown date"), |d| d.to_string())
                         );
-                        write!(
+                        writeln!(
                             global_status_message,
                             "{} at{}",
                             &status.text,
