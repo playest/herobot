@@ -253,24 +253,15 @@ impl StatusStore {
                 let file_path = file.path();
                 if file_path.is_file() {
                     if let Some(status) = self.store.get(&file_path) {
-                        //global_status_message.push_str(format!("{} ok at {}{}", status.item_name, status.last_update.map_or_else(|| String::from("unknown date"), |d| d.to_string()), LINE_ENDING).as_str());
-                        let text = format!(
-                            "{} at {}",
-                            status.text.as_str(),
-                            status
-                                .last_update
-                                .map_or_else(|| String::from("unknown date"), |d| d.to_string())
-                        );
                         writeln!(
                             global_status_message,
-                            "{} at{}",
+                            "{} at {}",
                             &status.text,
                             status
                                 .last_update
                                 .map_or_else(|| "unknown date".into(), |d| d.to_string())
                         )
                         .unwrap();
-                        global_status_message.push_str(text.as_str());
                     }
                 }
             }
